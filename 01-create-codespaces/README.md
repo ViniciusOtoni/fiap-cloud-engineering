@@ -26,7 +26,7 @@ Os laboratórios assumem esse par funcionando. Sem o setup completo, os comandos
 
 ## O que você terá ao final
 
-Um Codespaces rodando com credenciais AWS ativas, bucket S3 permanente criado, e o comando `aws s3 ls` respondendo sem erro. A partir daí, você está pronto para o [Lab 02.2 - Network File System (EFS)](../02-Storage/01-Network-file-system/README.md).
+Um Codespaces rodando com credenciais AWS ativas, bucket S3 permanente criado, e o comando `aws s3 ls` respondendo sem erro. A partir daí, você está pronto para o [Lab 02.1 - Network File System (EFS)](../02-Storage/01-Network-file-system/README.md).
 
 > [!TIP]
 > Os blocos `<details><summary>💡 Clique para entender</summary>` aprofundam conceitos. Pule se estiver com pressa.
@@ -71,7 +71,7 @@ Um Codespaces chamado `fiap-cloud-engineering` rodando na sua conta, com o repos
      Botão Fork destacado no cabeçalho do repositório original. -->
 ![](img/fork1.png)
 
-3. Na tela de criação do fork, **deixe `Copy the master branch only` desmarcado** (queremos todas as branches) e clique em `Create Fork`.
+3. Na tela de criação do fork, **deixe `Copy the main branch only` desmarcado** (queremos todas as branches) e clique em `Create Fork`.
 
 <details>
 <summary><b>💡 Por que fork em vez de clonar?</b></summary>
@@ -304,7 +304,7 @@ Você agora tem três peças funcionando juntas: fork do repositório com os lab
 
 ## Próximo passo
 
-Siga direto para o [Lab 02.2 - Network File System (EFS)](../02-Storage/01-Network-file-system/README.md). Ele é o primeiro laboratório prático da disciplina e usa o bucket `base-config-<SEU_RM>` que você acabou de criar.
+Siga direto para o [Lab 02.1 - Network File System (EFS)](../02-Storage/01-Network-file-system/README.md). Ele é o primeiro laboratório prático da disciplina e usa o bucket `base-config-<SEU_RM>` que você acabou de criar.
 
 ---
 

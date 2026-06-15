@@ -1,4 +1,4 @@
-# 02.2 - Network File System (Amazon EFS)
+# 02.1 - Network File System (Amazon EFS)
 
 **Antes de começar, execute os passos abaixo para configurar o ambiente caso não tenha feito isso ainda na aula de HOJE: [Preparando Credenciais](../../01-create-codespaces/Inicio-de-aula.md)**
 
