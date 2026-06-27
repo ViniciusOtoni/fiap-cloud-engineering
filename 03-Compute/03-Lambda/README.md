@@ -37,11 +37,12 @@ Três arquiteturas de ingestão funcionando e comparadas com dados reais, e a in
 | # | Parte | O que acontece | Passos | Tempo |
 |---|-------|---------------|--------|-------|
 | 1 | [O cenário: PedeJá](#parte-1---o-cenário-pedejá) | A história e o conjunto de dados fixo de pedidos. | [1](#passo-1) | ~5 min |
-| 2 | [Fase 1 — Ingestão direta (Lambda → S3)](#parte-2---fase-1-ingestão-direta) | API GW → Lambda → S3. Funciona. Observe os golden signals. | [2](#passo-2) · [3](#passo-3) · [4](#passo-4) · [5](#passo-5) · [6](#passo-6) · [7](#passo-7) | ~15 min |
-| 3 | [Fase 2 — A Black Friday (SQS)](#parte-3---fase-2-a-black-friday) | O pico quebra a v1. Desacople com fila + DLQ. | [8](#passo-8) · [9](#passo-9) · [10](#passo-10) · [11](#passo-11) · [12](#passo-12) | ~15 min |
-| 4 | [Fase 3 — Três times, um dado (Kinesis)](#parte-4---fase-3-três-times-um-dado) | A fila não distribui nem reprocessa. Evolua para streaming. | [13](#passo-13) · [14](#passo-14) · [15](#passo-15) · [16](#passo-16) · [17](#passo-17) | ~15 min |
-| | | Passos 3, 9 e 14 têm sub-passos (3.1/3.2 etc.) — clique no número para ir à parte. | | |
-| 5 | [Conclusão e decisão](#parte-5---conclusão-e-decisão) | Tabela comparativa e o documento de decisão. | [18](#passo-18) | ~5 min |
+| 2 | [Fase 1 — Ingestão direta (Lambda → S3)](#parte-2---fase-1-ingestão-direta) | API GW → Lambda → S3. Funciona, observe os golden signals e destrua. | [2](#passo-2) · [3](#passo-3) · [4](#passo-4) · [5](#passo-5) · [6](#passo-6) · [7](#passo-7) · [8](#passo-8) | ~15 min |
+| 3 | [Fase 2 — A Black Friday (SQS)](#parte-3---fase-2-a-black-friday) | O pico quebra a v1. Desacople com fila + DLQ e destrua. | [9](#passo-9) · [10](#passo-10) · [11](#passo-11) · [12](#passo-12) · [13](#passo-13) · [14](#passo-14) | ~15 min |
+| 4 | [Fase 3 — Três times, um dado (Kinesis)](#parte-4---fase-3-três-times-um-dado) | A fila não distribui nem reprocessa. Evolua para streaming e destrua. | [15](#passo-15) · [16](#passo-16) · [17](#passo-17) · [18](#passo-18) · [19](#passo-19) · [20](#passo-20) | ~15 min |
+| 5 | [Conclusão e decisão](#parte-5---conclusão-e-decisão) | Tabela comparativa e o documento de decisão. | [21](#passo-21) | ~5 min |
+
+> Os passos 3, 10 e 16 têm sub-passos (3.1/3.2 etc.) — clique no número para ir à parte. Os passos 8, 14 e 20 são o `terraform destroy` de cada fase: **não pule**.
 
 > Se travou em algum passo, clique no número no mapa acima para ir direto a ele.
 
@@ -316,13 +317,16 @@ Link (só funciona em conta AWS comum, no Academy mostra o banner): **[CloudWatc
 </blockquote>
 </details>
 
+<a id="passo-8"></a>
+**8.** A Fase 1 **funciona** e está observável. Antes de seguir, **destrua** esta fase para liberar os recursos (cada fase é independente e recria o que precisa):
+
+```bash
+cd /workspaces/fiap-cloud-engineering/03-Compute/03-Lambda/fase-1-ingestao
+terraform destroy -auto-approve
+```
+
 > [!IMPORTANT]
-> A Fase 1 **funciona** e está observável. Antes de seguir, **destrua** esta fase para liberar os recursos (cada fase é independente e recria o que precisa):
->
-> ```bash
-> cd /workspaces/fiap-cloud-engineering/03-Compute/03-Lambda/fase-1-ingestao
-> terraform destroy -auto-approve
-> ```
+> Não pule este passo. Cada fase é autossuficiente e recria o que precisa — deixar a fase anterior de pé só acumula recursos e custo na sua conta da AWS Academy.
 
 ### Checkpoint
 
@@ -354,8 +358,8 @@ Pipeline `API Gateway → Lambda produtora → SQS → Lambda consumidora → S3
 
 > Diagrama editável (Excalidraw): [`diagramas/fase-2.excalidraw`](diagramas/fase-2.excalidraw) — abra em [excalidraw.com](https://excalidraw.com).
 
-<a id="passo-8"></a>
-**8.** Entre na pasta da Fase 2 e inicialize:
+<a id="passo-9"></a>
+**9.** Entre na pasta da Fase 2 e inicialize:
 
 ```bash
 cd /workspaces/fiap-cloud-engineering/03-Compute/03-Lambda/fase-2-fila
@@ -366,8 +370,8 @@ terraform init \
   -backend-config="region=us-east-1"
 ```
 
-<a id="passo-9"></a>
-**9.1.** Aplique. Agora são **duas** Lambdas (produtora e consumidora), a fila SQS e a DLQ:
+<a id="passo-10"></a>
+**10.1.** Aplique. Agora são **duas** Lambdas (produtora e consumidora), a fila SQS e a DLQ:
 
 ```bash
 terraform apply -auto-approve
@@ -377,7 +381,7 @@ terraform apply -auto-approve
      Saida do terraform apply da Fase 2 com "Apply complete! Resources: 12 added" e os outputs api_url, queue_url, dashboard_url. -->
 ![](img/f2-apply.png)
 
-**9.2.** Capture os valores em variáveis (rode na pasta `fase-2-fila`):
+**10.2.** Capture os valores em variáveis (rode na pasta `fase-2-fila`):
 
 ```bash
 export API=$(terraform output -raw api_url)
@@ -399,8 +403,8 @@ A fila é um **buffer**: se chegam 10.000 pedidos num segundo, eles esperam na f
 </blockquote>
 </details>
 
-<a id="passo-10"></a>
-**10.** Dispare os mesmos 10 pedidos, usando a variável `$API` capturada no passo 9.2:
+<a id="passo-11"></a>
+**11.** Dispare os mesmos 10 pedidos, usando a variável `$API` capturada no passo 10.2:
 
 ```bash
 cd /workspaces/fiap-cloud-engineering/03-Compute/03-Lambda
@@ -413,8 +417,8 @@ done
 
 Saída esperada: 10 linhas como `{"status": "enfileirado", "pedido_id": "PED-0001"}`. Note: **`enfileirado`**, não `gravado` — o produtor respondeu antes de o S3 ser tocado. É o desacoplamento em ação.
 
-<a id="passo-11"></a>
-**11.** Aguarde alguns segundos e confirme que a consumidora processou a fila e gravou no S3 (**go/no-go**). Usa a variável `$BUCKET` do passo 9.2:
+<a id="passo-12"></a>
+**12.** Aguarde alguns segundos e confirme que a consumidora processou a fila e gravou no S3 (**go/no-go**). Usa a variável `$BUCKET` do passo 10.2:
 
 ```bash
 sleep 10
@@ -427,8 +431,8 @@ Saída esperada: `10`. A fila esvaziou e os 10 pedidos chegaram ao data lake —
      Saida do aws s3 ls com os 10 arquivos, provando que a consumidora gravou via fila. -->
 ![](img/f2-s3.png)
 
-<a id="passo-12"></a>
-**12.** Pegue o link do dashboard `PedeJa-Fase2-Fila` e abra no navegador:
+<a id="passo-13"></a>
+**13.** Pegue o link do dashboard `PedeJa-Fase2-Fila` e abra no navegador:
 
 ```bash
 terraform -chdir=/workspaces/fiap-cloud-engineering/03-Compute/03-Lambda/fase-2-fila output -raw dashboard_url
@@ -440,13 +444,16 @@ Abra a URL impressa — ou vá direto pelo link **[CloudWatch → Dashboards →
      Dashboard PedeJa-Fase2-Fila: backlog da fila, latencia produtor vs consumidor, DLQ zerada, enfileirados vs processados. -->
 ![](img/f2-dashboard.png)
 
+<a id="passo-14"></a>
+**14.** A fila resolveu o pico. **Destrua** a Fase 2 antes de seguir:
+
+```bash
+cd /workspaces/fiap-cloud-engineering/03-Compute/03-Lambda/fase-2-fila
+terraform destroy -auto-approve
+```
+
 > [!IMPORTANT]
-> A fila resolveu o pico. **Destrua** a Fase 2 antes de seguir:
->
-> ```bash
-> cd /workspaces/fiap-cloud-engineering/03-Compute/03-Lambda/fase-2-fila
-> terraform destroy -auto-approve
-> ```
+> Não pule este passo. Deixar SQS, DLQ e Lambdas de pé acumula recursos e custo na sua conta da AWS Academy.
 
 ### Checkpoint
 
@@ -478,8 +485,8 @@ Pipeline `API Gateway → Lambda produtora → Kinesis → 2 consumidores indepe
 
 > Diagrama editável (Excalidraw): [`diagramas/fase-3.excalidraw`](diagramas/fase-3.excalidraw) — abra em [excalidraw.com](https://excalidraw.com).
 
-<a id="passo-13"></a>
-**13.** Entre na pasta da Fase 3 e inicialize:
+<a id="passo-15"></a>
+**15.** Entre na pasta da Fase 3 e inicialize:
 
 ```bash
 cd /workspaces/fiap-cloud-engineering/03-Compute/03-Lambda/fase-3-streaming
@@ -490,14 +497,14 @@ terraform init \
   -backend-config="region=us-east-1"
 ```
 
-<a id="passo-14"></a>
-**14.1.** Aplique. Agora são 3 Lambdas (1 produtora + 2 consumidoras) e o Kinesis Data Stream:
+<a id="passo-16"></a>
+**16.1.** Aplique. Agora são 3 Lambdas (1 produtora + 2 consumidoras) e o Kinesis Data Stream:
 
 ```bash
 terraform apply -auto-approve
 ```
 
-**14.2.** Capture os valores em variáveis (rode na pasta `fase-3-streaming`):
+**16.2.** Capture os valores em variáveis (rode na pasta `fase-3-streaming`):
 
 ```bash
 export API=$(terraform output -raw api_url)
@@ -507,7 +514,7 @@ echo "BUCKET.: $BUCKET"
 ```
 
 > [!NOTE]
-> Os consumidores do Kinesis usam `starting_position = TRIM_HORIZON` (leem desde o início do stream). Após o apply, eles levam **~30-60 segundos** para "armar" antes de começar a processar. Por isso o passo 15 publica e o passo 16 espera.
+> Os consumidores do Kinesis usam `starting_position = TRIM_HORIZON` (leem desde o início do stream). Após o apply, eles levam **~30-60 segundos** para "armar" antes de começar a processar. Por isso o passo 17 publica e o passo 18 espera.
 
 <details>
 <summary><b>💡 Clique para entender — por que Kinesis e não outra fila</b></summary>
@@ -528,8 +535,8 @@ Cada consumidor tem seu **próprio ponteiro de leitura** (iterator) no stream. O
 </blockquote>
 </details>
 
-<a id="passo-15"></a>
-**15.** Publique os mesmos 10 pedidos no stream, usando a variável `$API` do passo 14.2:
+<a id="passo-17"></a>
+**17.** Publique os mesmos 10 pedidos no stream, usando a variável `$API` do passo 16.2:
 
 ```bash
 cd /workspaces/fiap-cloud-engineering/03-Compute/03-Lambda
@@ -542,8 +549,8 @@ done
 
 Saída esperada: 10 linhas como `{"status": "publicado", "pedido_id": "PED-0001"}`.
 
-<a id="passo-16"></a>
-**16.** Aguarde o polling dos consumidores e valide os **dois** caminhos a partir do **mesmo** stream (usa `$BUCKET` do passo 14.2):
+<a id="passo-18"></a>
+**18.** Aguarde o polling dos consumidores e valide os **dois** caminhos a partir do **mesmo** stream (usa `$BUCKET` do passo 16.2):
 
 ```bash
 sleep 45
@@ -562,8 +569,8 @@ Saída esperada: `10` objetos no S3 **e** as 4 cidades (Belo Horizonte, Curitiba
      Terminal mostrando "10" objetos no S3 e as 4 cidades agregadas, provando os 2 consumidores independentes do mesmo stream. -->
 ![](img/f3-dois-consumidores.png)
 
-<a id="passo-17"></a>
-**17.** Pegue o link do dashboard `PedeJa-Fase3-Streaming` e abra no navegador:
+<a id="passo-19"></a>
+**19.** Pegue o link do dashboard `PedeJa-Fase3-Streaming` e abra no navegador:
 
 ```bash
 terraform -chdir=/workspaces/fiap-cloud-engineering/03-Compute/03-Lambda/fase-3-streaming output -raw dashboard_url
@@ -575,13 +582,16 @@ Abra a URL impressa — ou vá direto pelo link **[CloudWatch → Dashboards →
      Dashboard PedeJa-Fase3-Streaming: trafego publicados vs 2 consumidores, e faturamento em tempo real por cidade. -->
 ![](img/f3-dashboard.png)
 
+<a id="passo-20"></a>
+**20.** Destrua a Fase 3:
+
+```bash
+cd /workspaces/fiap-cloud-engineering/03-Compute/03-Lambda/fase-3-streaming
+terraform destroy -auto-approve
+```
+
 > [!CAUTION]
-> **Esse passo não é opcional.** Kinesis on-demand e Lambdas geram custo enquanto vivos. Destrua a Fase 3:
->
-> ```bash
-> cd /workspaces/fiap-cloud-engineering/03-Compute/03-Lambda/fase-3-streaming
-> terraform destroy -auto-approve
-> ```
+> **Esse passo não é opcional.** Kinesis on-demand e Lambdas geram custo enquanto vivos — se você sair sem destruir, segue consumindo o orçamento da sua conta da AWS Academy.
 
 ### Checkpoint
 
@@ -606,8 +616,8 @@ Você resolveu o **mesmo** problema de negócio três vezes, e cada arquitetura 
 
 A lição central de engenharia de dados: **não existe arquitetura "certa" no vácuo**. A Fase 1 não é "errada" — ela é a escolha certa enquanto o volume é baixo. O que mudou foi o *problema*, e os **dados de observabilidade** (latência subindo, saturação, depois a necessidade de múltiplos consumidores) é que justificaram cada evolução. Você não adivinhou: mediu.
 
-<a id="passo-18"></a>
-**18.** Escreva sua decisão. Crie um arquivo `DECISION.md` na pasta do lab respondendo, em poucas linhas, como se fosse para a Marina:
+<a id="passo-21"></a>
+**21.** Escreva sua decisão. Crie um arquivo `DECISION.md` na pasta do lab respondendo, em poucas linhas, como se fosse para a Marina:
 
 ```bash
 code /workspaces/fiap-cloud-engineering/03-Compute/03-Lambda/DECISION.md
