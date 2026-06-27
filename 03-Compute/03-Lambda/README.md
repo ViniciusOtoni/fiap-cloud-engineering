@@ -577,22 +577,12 @@ Saída esperada: as 4 cidades — `Belo Horizonte`, `Curitiba`, `Rio de Janeiro`
 <a id="passo-19"></a>
 **19.** Valide o **Consumidor A (Firehose → Parquet → Athena)**. Espere o buffer do Firehose fechar (~60s) e consulte com SQL. Este é o **go/no-go** da fase — o número tem que bater com a Parte 1 × 500:
 
-O Terraform já criou um **workgroup `pedeja`** com o local de resultados configurado — então você consulta sem precisar configurar nada. Dispare a query:
+O Terraform já criou um **workgroup `pedeja`** com o local de resultados configurado — então você consulta sem precisar configurar nada. Um único script dispara a query, espera terminar e imprime a tabela (sem copiar/colar ID de execução):
 
 ```bash
-sleep 60
-aws athena start-query-execution \
-  --query-string "SELECT cidade, COUNT(*) AS pedidos, ROUND(SUM(valor),2) AS faturamento FROM pedeja.pedidos GROUP BY cidade ORDER BY faturamento DESC" \
-  --query-execution-context Database=pedeja \
-  --work-group pedeja \
-  --query "QueryExecutionId" --output text
-```
-
-Esse comando devolve um **ID de execução**. Pegue o resultado (troque `<ID>` pelo valor impresso):
-
-```bash
-aws athena get-query-results --query-execution-id <ID> \
-  --query "ResultSet.Rows[].Data[].VarCharValue" --output text
+cd /workspaces/fiap-cloud-engineering/03-Compute/03-Lambda
+sleep 60   # garante que o buffer do Firehose (60s) ja fechou
+python3 dados/consultar_athena.py
 ```
 
 Saída esperada (o faturamento é 500× o da Parte 1):
