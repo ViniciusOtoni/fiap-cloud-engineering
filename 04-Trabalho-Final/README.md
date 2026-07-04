@@ -247,6 +247,51 @@ code /workspaces/fiap-cloud-engineering/04-Trabalho-Final/lambdas/processa/handl
 
 Leia o arquivo inteiro. Tudo está pronto — imports, Powertools, `ler_pedidos_do_s3()` e `gravar_resumo_no_s3()` — **exceto** o bloco marcado com `# TODO — VOCE COMPLETA AQUI`.
 
+<details>
+<summary><b>💡 Prefere outra linguagem? (Node.js, Java, Go, .NET, Ruby)</b></summary>
+<blockquote>
+
+O padrão entregue é Python, mas o Lambda suporta várias linguagens e você pode fazer o exercício em qualquer uma delas. O que muda em **cada** Lambda (`02-processa` e `03-api`) são três coisas acopladas — todas no `main.tf` do stack:
+
+1. **`runtime`** — troque `"python3.12"` pelo runtime da sua linguagem: `nodejs20.x`, `java21`, `dotnet8`, `ruby3.3`, ou `provided.al2023` (Go / runtime customizado).
+2. **`handler`** — o formato do handler muda por linguagem (ex: Node → `index.handler`; Java → `pacote.Classe::metodo`). Ajuste também o nome do arquivo dentro de `lambdas/processa/` e `lambdas/api/`.
+3. **Powertools (layer)** — a layer configurada (`powertools_layer`) é **específica de Python**. No caminho de outra linguagem, o mais simples é **remover** a linha `layers = [local.powertools_layer]` do recurso e usar a observabilidade nativa da sua linguagem (ex: `console.log` no Node, que já cai no CloudWatch Logs). Você perde as métricas EMF prontas do Powertools, mas o exercício não depende delas.
+
+> [!IMPORTANT]
+> **Linguagens compiladas exigem um passo de build antes do zip.** Python e Node.js são "zip do código-fonte" — o `archive_file` do Terraform empacota a pasta direto e funciona. Já **Java, Go e .NET precisam ser compilados** (`mvn package`, `go build`, `dotnet publish`) e o zip deve conter o artefato compilado, não o fonte. Nesse caso, gere o build você mesmo e aponte o `filename`/`source_dir` da Lambda para o artefato pronto (ou adicione um `null_resource` com `local-exec` que roda o build antes do `archive_file`). Se estiver com o tempo apertado, **fique em Node.js ou Python** — são as que rodam sem toolchain extra.
+
+**Exemplo em Node.js** (linguagem de zip direto, como a demo de ECS que você fez). Para a Lambda de **processamento** (`lambdas/processa/index.js`), o miolo equivalente ao TODO:
+
+```javascript
+const { S3Client, ListObjectsV2Command, GetObjectCommand, PutObjectCommand } = require("@aws-sdk/client-s3");
+const s3 = new S3Client({});
+const BUCKET = process.env.BUCKET_DATA_LAKE;
+
+exports.handler = async () => {
+  // le raw/, agrega por cidade, grava resumo/faturamento.json (mesmo contrato do Python)
+  const lista = await s3.send(new ListObjectsV2Command({ Bucket: BUCKET, Prefix: "raw/" }));
+  const resumo = {};
+  for (const obj of lista.Contents ?? []) {
+    if (!obj.Key.endsWith(".json")) continue;
+    const r = await s3.send(new GetObjectCommand({ Bucket: BUCKET, Key: obj.Key }));
+    const p = JSON.parse(await r.Body.transformToString());
+    if (!resumo[p.cidade]) resumo[p.cidade] = { pedidos: 0, faturamento: 0 };
+    resumo[p.cidade].pedidos += 1;
+    resumo[p.cidade].faturamento = Math.round((resumo[p.cidade].faturamento + p.valor) * 100) / 100;
+  }
+  await s3.send(new PutObjectCommand({
+    Bucket: BUCKET, Key: "resumo/faturamento.json",
+    Body: JSON.stringify(resumo), ContentType: "application/json",
+  }));
+  return { status: "ok", cidades: Object.keys(resumo).length };
+};
+```
+
+No `terraform/02-processa/main.tf`: `runtime = "nodejs20.x"`, `handler = "index.handler"`, remova a linha `layers`. O SDK `@aws-sdk/client-s3` já vem no runtime `nodejs20.x` — não precisa `npm install`. O contrato (lê `raw/`, grava `resumo/faturamento.json`) e a saída determinística (R$ 596,70) são **os mesmos**, independente da linguagem. A Lambda da API segue a mesma ideia, lendo `resumo/faturamento.json` e devolvendo no `body` da resposta HTTP.
+
+</blockquote>
+</details>
+
 <a id="passo-7"></a>
 **7.** Complete o `TODO`: a partir da lista `pedidos` (cada item tem `cidade` e `valor`), monte o dicionário `resumo` agregando faturamento e contagem por cidade, no formato indicado no comentário. São poucas linhas de Python — a demo de Lambda já mostrou o padrão de somar por dimensão.
 
