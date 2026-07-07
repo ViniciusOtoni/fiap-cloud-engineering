@@ -290,7 +290,7 @@ O arquivo `resumo/faturamento.json` gravado no S3, com o faturamento por cidade 
 code /workspaces/fiap-cloud-engineering/04-Trabalho-Final/lambdas/processa/handler.py
 ```
 
-Leia o arquivo inteiro. Tudo está pronto — imports, Powertools, `ler_pedidos_do_s3()` e `gravar_resumo_no_s3()` — **exceto** o bloco marcado com `# TODO — VOCE COMPLETA AQUI`.
+Leia o arquivo inteiro. Tudo está pronto — imports, Powertools, `ler_pedidos_do_s3()` e `gravar_resumo_no_s3()` — **exceto** o bloco marcado com `# -- VOCE COMPLETA AQUI (bloco 2: processar) --`. É ali, e só ali, que você escreve.
 
 <details>
 <summary><b>💡 Prefere outra linguagem? (Node.js, Java, Go, .NET, Ruby)</b></summary>
@@ -305,7 +305,7 @@ O padrão entregue é Python, mas o Lambda suporta várias linguagens e você po
 > [!IMPORTANT]
 > **Linguagens compiladas exigem um passo de build antes do zip.** Python e Node.js são "zip do código-fonte" — o `archive_file` do Terraform empacota a pasta direto e funciona. Já **Java, Go e .NET precisam ser compilados** (`mvn package`, `go build`, `dotnet publish`) e o zip deve conter o artefato compilado, não o fonte. Nesse caso, gere o build você mesmo e aponte o `filename`/`source_dir` da Lambda para o artefato pronto (ou adicione um `null_resource` com `local-exec` que roda o build antes do `archive_file`). Se estiver com o tempo apertado, **fique em Node.js ou Python** — são as que rodam sem toolchain extra.
 
-**Exemplo em Node.js** (linguagem de zip direto, como a demo de ECS que você fez). Para a Lambda de **processamento** (`lambdas/processa/index.js`), o miolo equivalente ao TODO:
+**Exemplo em Node.js** (linguagem de zip direto, como a demo de ECS que você fez). O **andaime** de I/O da Lambda de **processamento** (`lambdas/processa/index.js`) — a leitura do `raw/` e a gravação do `resumo/` ficam prontas, e a **agregação por cidade continua sendo sua** (o mesmo bloco que você completaria no Python):
 
 ```javascript
 const { S3Client, ListObjectsV2Command, GetObjectCommand, PutObjectCommand } = require("@aws-sdk/client-s3");
@@ -313,17 +313,18 @@ const s3 = new S3Client({});
 const BUCKET = process.env.BUCKET_DATA_LAKE;
 
 exports.handler = async () => {
-  // le raw/, agrega por cidade, grava resumo/faturamento.json (mesmo contrato do Python)
   const lista = await s3.send(new ListObjectsV2Command({ Bucket: BUCKET, Prefix: "raw/" }));
-  const resumo = {};
+  const pedidos = [];
   for (const obj of lista.Contents ?? []) {
     if (!obj.Key.endsWith(".json")) continue;
     const r = await s3.send(new GetObjectCommand({ Bucket: BUCKET, Key: obj.Key }));
-    const p = JSON.parse(await r.Body.transformToString());
-    if (!resumo[p.cidade]) resumo[p.cidade] = { pedidos: 0, faturamento: 0 };
-    resumo[p.cidade].pedidos += 1;
-    resumo[p.cidade].faturamento = Math.round((resumo[p.cidade].faturamento + p.valor) * 100) / 100;
+    pedidos.push(JSON.parse(await r.Body.transformToString()));
   }
+
+  // -- VOCE COMPLETA: agregue `pedidos` por cidade no dict `resumo` --
+  // (pedidos e faturamento por cidade; mesmo contrato do passo 8)
+  const resumo = {};
+
   await s3.send(new PutObjectCommand({
     Bucket: BUCKET, Key: "resumo/faturamento.json",
     Body: JSON.stringify(resumo), ContentType: "application/json",
@@ -334,11 +335,16 @@ exports.handler = async () => {
 
 No `terraform/02-processa/main.tf`: `runtime = "nodejs20.x"`, `handler = "index.handler"`, remova a linha `layers`. O SDK `@aws-sdk/client-s3` já vem no runtime `nodejs20.x` — não precisa `npm install`. O contrato (lê `raw/`, grava `resumo/faturamento.json`) e a saída determinística (R$ 596,70) são **os mesmos**, independente da linguagem. A Lambda da API segue a mesma ideia, lendo `resumo/faturamento.json` e devolvendo no `body` da resposta HTTP.
 
+No `terraform/02-processa/main.tf`: `runtime = "nodejs20.x"`, `handler = "index.handler"`, remova a linha `layers`. O SDK `@aws-sdk/client-s3` já vem no runtime `nodejs20.x` — não precisa `npm install`. O contrato (lê `raw/`, grava `resumo/faturamento.json`) e a saída determinística (R$ 596,70) são **os mesmos**, independente da linguagem. A Lambda da API segue a mesma ideia, lendo `resumo/faturamento.json` e devolvendo no `body` da resposta HTTP.
+
 </blockquote>
 </details>
 
 <a id="passo-7"></a>
-**7.** Complete o `TODO`: a partir da lista `pedidos` (cada item tem `cidade` e `valor`), monte o dicionário `resumo` agregando faturamento e contagem por cidade, no formato indicado no comentário. São poucas linhas de Python — a demo de Lambda já mostrou o padrão de somar por dimensão.
+**7.** Complete o bloco marcado. **Entrada:** a lista `pedidos`, onde cada item tem pelo menos `cidade` (texto) e `valor` (número). **Saída:** um dicionário `resumo` **indexado pela cidade**, e para cada cidade dois números — **quantos pedidos** ela teve e a **soma dos valores** (o faturamento), arredondada a 2 casas. Esse é o contrato: o JSON que você vê no passo 8 é exatamente o seu `resumo` gravado — use-o como gabarito do formato. A lógica é percorrer os pedidos uma vez acumulando por cidade; a demo de Lambda (03.3) já mostrou o padrão de **agregar por uma dimensão**. São poucas linhas.
+
+> [!TIP]
+> Pense no caso da **primeira** vez que uma cidade aparece: a chave dela ainda não existe no `resumo`, então você precisa inicializá-la (pedidos em 0, faturamento em 0.0) antes de somar. É o detalhe onde a maioria dos bugs mora.
 
 > [!TIP]
 > O resultado precisa ser determinístico: os 10 pedidos são fixos, então o faturamento por cidade é sempre o mesmo. Você valida contra o número conhecido no passo 8. Se der diferente, o bug está na sua agregação.
@@ -434,7 +440,7 @@ Depois de corrigir, rode o passo 8 de novo.
 
 ### Checkpoint
 
-- [x] Você completou o `TODO` do `lambdas/processa/handler.py`.
+- [x] Você completou o bloco marcado no `lambdas/processa/handler.py`.
 - [x] A invocação retornou `status: ok` e `cidades: 4`.
 - [x] `get-function-configuration` confirmou `arm64` (Graviton).
 - [x] O `faturamento.json` no S3 bate o total de **R$ 596,70** em 10 pedidos.
@@ -458,10 +464,10 @@ A API já existe: API Gateway → Lambda `pedeja-api-faturamento`. A resposta HT
 code /workspaces/fiap-cloud-engineering/04-Trabalho-Final/lambdas/api/handler.py
 ```
 
-Está tudo pronto — a função `resposta()` e o roteamento — **exceto** o bloco `# TODO — VOCE COMPLETA AQUI`.
+Está tudo pronto — a função `resposta()` e o roteamento — **exceto** o bloco `# -- VOCE COMPLETA AQUI (bloco 3: servir) --`.
 
 <a id="passo-10"></a>
-**10.** Complete o `TODO`: leia o objeto `CHAVE_RESUMO` do bucket no S3 e faça o `json.loads` para o dict `faturamento`. Trate o caso do objeto ainda não existir devolvendo `resposta(404, ...)`. O comentário no código dá a dica do `boto3`.
+**10.** Complete o bloco marcado. **Objetivo:** ler do S3 o resumo que o bloco 2 gravou (o objeto está em `CHAVE_RESUMO`, no bucket `BUCKET` — ambos já definidos no topo do arquivo) e transformá-lo no dict `faturamento` que a função devolve. Você já leu de objetos do S3 na demo de Lambda; o cliente `s3` (boto3) e o `json` estão importados. **Caminho infeliz obrigatório:** se o bloco 2 ainda não rodou, esse objeto **não existe** no S3 e a leitura levanta exceção. Capture esse caso e responda com `resposta(404, {...})` e uma mensagem clara — assim a API devolve um 404 explicativo em vez de estourar um 500 genérico.
 
 <a id="passo-11"></a>
 **11.** Reaplique **só o stack da API** (reempacota seu código) e consulte o endpoint:
@@ -478,7 +484,7 @@ Saída esperada: o mesmo JSON de faturamento por cidade do passo 8 (as **4 cidad
 > **Mesma regra do passo 8: editou o handler, roda de novo.** `terraform apply` reempacota e atualiza a Lambda da API; o `curl` consulta o resultado. Ajuste o código, reaplique, consulte — repita quantas vezes precisar.
 
 > [!IMPORTANT]
-> Se o `curl` retornar `{}` (vazio) com sucesso, **não terminou**: significa que o `resumo/faturamento.json` está vazio — seu TODO do **bloco 2** (passo 7) não agregou nada. Volte ao passo 8, confirme que a invocação deu `cidades: 4`, e só então consulte a API. Um `{}` não é a resposta certa.
+> Se o `curl` retornar `{}` (vazio) com sucesso, **não terminou**: significa que o `resumo/faturamento.json` está vazio — sua agregação do **bloco 2** (passo 7) não produziu nada. Volte ao passo 8, confirme que a invocação deu `cidades: 4`, e só então consulte a API. Um `{}` não é a resposta certa.
 
 > [!NOTE]
 > Se o `apply` disser **`No changes`** mas você editou o handler, force o reempacotamento: `rm -f terraform/03-api/build/api.zip && terraform -chdir=terraform/03-api apply -auto-approve`.
@@ -513,7 +519,7 @@ A API funcionou, mas o `resumo/faturamento.json` não existe no S3 — você pro
 
 ### Checkpoint
 
-- [x] Você completou o `TODO` do `lambdas/api/handler.py`.
+- [x] Você completou o bloco marcado no `lambdas/api/handler.py`.
 - [x] `curl $API/faturamento` retorna o faturamento por cidade em JSON.
 
 ---

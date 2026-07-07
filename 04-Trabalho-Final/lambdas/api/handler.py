@@ -4,6 +4,12 @@ import boto3
 
 from aws_lambda_powertools import Logger, Tracer
 
+# Correcao de enunciado: o bloco "VOCE COMPLETA AQUI" no handler() e
+# intencionalmente enxuto — ele NAO traz a solucao pronta nem um esqueleto quase
+# copiavel; ler o S3 e tratar o erro e com voce. Este e o estado correto do
+# arquivo, nao uma versao incompleta: nao ha nada a "restaurar" de um commit
+# anterior.
+
 logger = Logger(service="pedeja-api")
 tracer = Tracer(service="pedeja-api")
 
@@ -27,26 +33,14 @@ def handler(event, context):
     # A API Gateway (proxy) invoca esta Lambda com um EVENTO — nao ha porta
     # escutando. Aqui respondemos GET /faturamento lendo o resumo do S3.
 
-    # =====================================================================
-    # TODO — VOCE COMPLETA AQUI (bloco 3: servir)
-    # ---------------------------------------------------------------------
-    # Leia o objeto CHAVE_RESUMO do bucket BUCKET no S3 e faca o parse do
-    # JSON para um dict chamado `faturamento`.
-    # Dica: use s3.get_object(Bucket=..., Key=...)["Body"].read() e json.loads.
-    # Se o objeto ainda nao existe (o bloco 2 nao rodou), o get_object lanca
-    # a excecao s3.exceptions.NoSuchKey — capture-a e devolva resposta(404, ...)
-    # com uma mensagem clara (assim a API nao quebra com erro 500).
-    #
-    # Esqueleto (complete os ...):
-    #     try:
-    #         corpo = s3.get_object(Bucket=..., Key=...)["Body"].read()
-    #         faturamento = json.loads(corpo)
-    #     except s3.exceptions.NoSuchKey:
-    #         return resposta(404, {"erro": "resumo ainda nao gerado; rode o bloco 2"})
-    #
-    # Substitua a linha abaixo pela sua leitura:
+    # -- VOCE COMPLETA AQUI (bloco 3: servir) -----------------------------
+    # Leia o resumo gravado pelo bloco 2 (objeto CHAVE_RESUMO no bucket BUCKET)
+    # e transforme-o no dict `faturamento` devolvido abaixo. Pense no caminho
+    # infeliz: se o bloco 2 ainda nao rodou, o objeto nao existe — trate esse
+    # caso devolvendo `resposta(404, ...)` com uma mensagem clara, para a API
+    # nao estourar um 500 generico.
     faturamento = {}
-    # =====================================================================
+    # ---------------------------------------------------------------------
 
     logger.info("faturamento servido", cidades=len(faturamento))
     return resposta(200, faturamento)

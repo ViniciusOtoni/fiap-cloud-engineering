@@ -5,6 +5,11 @@ import boto3
 from aws_lambda_powertools import Logger, Metrics, Tracer
 from aws_lambda_powertools.metrics import MetricUnit
 
+# Correcao de enunciado: o bloco "VOCE COMPLETA AQUI" no handler() e
+# intencionalmente enxuto — ele NAO traz a solucao pronta nem um esqueleto quase
+# copiavel; a logica de agregacao e sua. Este e o estado correto do arquivo, nao
+# uma versao incompleta: nao ha nada a "restaurar" de um commit anterior.
+
 # Observabilidade com Powertools — o mesmo padrao que voce viu na demo de Lambda
 # (03.3): log estruturado (Logger), metrica de negocio via EMF (Metrics) e trace
 # distribuido no X-Ray (Tracer). Ja vem pronto; voce nao precisa mexer aqui.
@@ -58,23 +63,14 @@ def gravar_resumo_no_s3(resumo):
 def handler(event, context):
     pedidos = ler_pedidos_do_s3()
 
-    # =====================================================================
-    # TODO — VOCE COMPLETA AQUI (bloco 2: processar)
-    # ---------------------------------------------------------------------
-    # Voce recebe a lista `pedidos` (cada item tem "cidade" e "valor").
-    # Monte o dicionario `resumo` agregando o faturamento por cidade, no
-    # formato:
-    #     resumo = {
-    #         "Sao Paulo":      {"pedidos": 4, "faturamento": 235.30},
-    #         "Rio de Janeiro": {"pedidos": 2, "faturamento": 198.40},
-    #         ...
-    #     }
-    # Dica: percorra `pedidos`, some `valor` por `cidade` e conte quantos.
-    # Arredonde o faturamento para 2 casas (round(x, 2)).
-    #
-    # Substitua a linha abaixo pela sua agregacao:
+    # -- VOCE COMPLETA AQUI (bloco 2: processar) --------------------------
+    # A partir da lista `pedidos` (cada item tem "cidade" e "valor"), produza
+    # o dicionario `resumo` com o faturamento agregado por cidade. Cada cidade
+    # deve trazer quantos pedidos teve e a soma dos valores. Esse `resumo` e o
+    # que sera gravado no S3 e servido pela API — o formato dele e o contrato
+    # do exercicio (veja no README, passo 8, o JSON esperado).
     resumo = {}
-    # =====================================================================
+    # ---------------------------------------------------------------------
 
     gravar_resumo_no_s3(resumo)
 
