@@ -1,0 +1,641 @@
+# 04 - Trabalho Final: Modernizando a ingestão da PedeJá (EFS → S3 → Lambda → API)
+
+**Antes de começar, execute os passos abaixo para configurar o ambiente caso não tenha feito isso ainda na aula de HOJE: [Preparando Credenciais](../01-create-codespaces/Inicio-de-aula.md)**
+
+Os comandos deste trabalho rodam em **dois ambientes**: o provisionamento e a maior parte no **terminal do GitHub Codespaces**; a migração (Bloco 1) dentro da **instância EC2** que você acessa via SSM. Cada passo sinaliza onde executar.
+
+> [!WARNING]
+> **Pré-requisitos — confira antes de começar:**
+>
+> - [ ] Você já executou as 4 demos (Storage, x86/Graviton, ECS/Fargate, Lambda). Este trabalho **monta blocos** dessas demos.
+> - [ ] Codespace aberto e sincronizado com credenciais da AWS Academy (rodou o [Preparando Credenciais](../01-create-codespaces/Inicio-de-aula.md) na aula de hoje).
+> - [ ] `aws sts get-caller-identity` retorna um `Account` e um `Arn` sem erro.
+> - [ ] `aws s3 ls | grep base-config-` lista exatamente **um** bucket do seu RM.
+> - [ ] `terraform -version` retorna >= 1.3.
+>
+> **O que você vai fazer:** modernizar a ingestão de pedidos da PedeJá em três blocos — **migrar** os arquivos do EFS legado para o S3, **processar** com uma Lambda Graviton que agrega o faturamento, e **servir** o resultado por uma API. A infraestrutura (Terraform) vem **pronta**; você completa o **miolo** de duas Lambdas e escreve a decisão de arquitetura. **Tempo estimado: 2 horas** (execução ~40 min + tempo para completar o código, observar, tirar prints e escrever o `DECISION.md`).
+
+Você é o engenheiro de dados da **PedeJá**. Os pedidos hoje vivem num **servidor de arquivos legado (EFS)** — um arquivo `.json` por pedido, como o sistema antigo gravava. A **Marina, líder de Dados**, quer modernizar: tirar os dados do file system, colocá-los no **data lake (S3)**, e disponibilizar um **resumo de faturamento por cidade** através de uma **API**. Você vai construir exatamente essa jornada, reaproveitando tudo que praticou nas demos.
+
+![Arquitetura do Trabalho Final: EFS → S3 → Lambda Graviton → API](diagramas/arquitetura-final.png)
+
+Acompanhe o caminho do dado no diagrama acima: os pedidos saem do **EFS legado**, a **EC2** faz o `aws s3 sync` para o prefixo `raw/` do **S3**, a **Lambda PROCESSA (Graviton)** lê esse prefixo e grava o faturamento em `resumo/`, e a **Lambda API (Graviton) + API Gateway** servem o resultado no `GET /faturamento`.
+
+> [!CAUTION]
+> **Custo de deixar a infra de pé: ~US$ 0,02/hora (~US$ 0,50/dia), mesmo sem nenhuma chamada.** O grande responsável é a **EC2 `t3.small`**, que cobra por hora ligada 24/7 faça você algo ou não. **EFS**, **Lambda**, **API Gateway** e **S3** são pay-per-use — parados custam ~US$ 0. **Não deixe isso rodando.** A entrega é código + prints, então nada te prende à infra: se você **não vai terminar hoje**, o certo é **destruir tudo** (passo 14) e **subir de novo** (passo 1) quando retomar. É idempotente — sobe igualzinho.
+
+<details>
+<summary>💡 <b>Não vai terminar numa sentada só? O ritual de descer e subir a infra a cada sessão</b></summary>
+<blockquote>
+
+Como a entrega são **prints e código** (e o código está versionado / no seu zip), **nada é perdido** ao destruir a infra — só os recursos AWS que geram custo. Então, se o trabalho vai durar mais de um dia:
+
+**Ao parar** (fim de cada sessão de trabalho) — destrua tudo, na ordem inversa da criação:
+
+```bash
+cd /workspaces/fiap-cloud-engineering/04-Trabalho-Final
+terraform -chdir=terraform/03-api destroy -auto-approve
+terraform -chdir=terraform/02-processa destroy -auto-approve
+terraform -chdir=terraform/01-storage destroy -auto-approve
+```
+
+**Ao retomar** (início da próxima sessão) — suba tudo de novo:
+
+```bash
+cd /workspaces/fiap-cloud-engineering/04-Trabalho-Final
+bash scripts/init.sh
+```
+
+O `init.sh` recria a EC2, o EFS e replanta os 10 pedidos do zero — o dataset é **determinístico**, então os números batem igual. **Atenção às variáveis de sessão:** o `BUCKET` continua o mesmo (deriva do seu número de conta), mas a **EC2 e a API são recursos novos**, então `INSTANCE_ID` e `API` **mudam**. Ao retomar, rode de novo o bloco de `export` que recarrega essas variáveis (o mesmo do início do Bloco 1) antes de continuar — não reaproveite o `API_URL` da sessão anterior.
+
+</blockquote>
+</details>
+
+## Principais pontos de aprendizagem
+
+- Migrar dados de **file storage (EFS)** para **object storage (S3)** e por que essa é a direção certa para um data lake analítico.
+- Completar o **miolo** de uma Lambda de processamento (ler S3 → agregar → gravar), com observabilidade via Powertools — como na demo de Lambda.
+- Aplicar na prática a decisão **x86 vs Graviton**: a Lambda roda em `arm64` e você justifica por quê.
+- Expor dados do S3 por uma **API (Lambda + API Gateway)** e decidir, com argumento, **Lambda vs. Fargate**.
+- Amarrar as quatro demos numa única solução end-to-end e defender as escolhas num documento estilo ADR.
+
+## O que você terá ao final
+
+Uma pipeline funcionando de ponta a ponta — pedidos migrados do EFS para o S3, processados por uma Lambda Graviton e servidos por uma API HTTP — mais um `DECISION.md` defendendo suas escolhas de arquitetura. A entrega é um **zip** com o código que você completou, o `DECISION.md` e os prints que provam a execução.
+
+> [!TIP]
+> Ao longo do trabalho você vai encontrar blocos `<details><summary>💡 Clique para entender</summary>`. Eles aprofundam o "porquê". Se estiver com pressa, **pule**.
+
+## Mapa do trabalho
+
+| # | Bloco | O que acontece | Passos | Tempo |
+|---|-------|---------------|--------|-------|
+| 0 | [Provisionar (entregue pronto)](#bloco-0---provisionar-a-infraestrutura) | Um script sobe VPC + EC2 + EFS (com os pedidos) + S3 + as 2 Lambdas + API. | [1](#passo-1) · [2](#passo-2) | ~10 min |
+| 1 | [Migrar EFS → S3](#bloco-1---migrar-os-pedidos-do-efs-para-o-s3) | Entra na EC2 via SSM e sincroniza os pedidos do file system para o data lake. | [3](#passo-3) · [4](#passo-4) · [5](#passo-5) | ~15 min |
+| 2 | [Processar (você completa)](#bloco-2---processar-o-faturamento-lambda-graviton) | Completa o miolo da Lambda Graviton que agrega faturamento por cidade. | [6](#passo-6) · [7](#passo-7) · [8](#passo-8) | ~30 min |
+| 3 | [Servir (você completa)](#bloco-3---servir-o-resultado-por-uma-api) | Completa a Lambda da API que lê o resumo do S3 e responde em JSON. | [9](#passo-9) · [10](#passo-10) · [11](#passo-11) | ~25 min |
+| 4 | [Decidir e entregar](#bloco-4---decidir-e-entregar) | Escreve o `DECISION.md`, monta o zip com código + prints e destrói a infra. | [12](#passo-12) · [13](#passo-13) · [14](#passo-14) | ~30 min |
+
+> Os passos são numerados de 1 a 14, contínuos. Se travar, clique no número no mapa para ir direto ao passo.
+
+<details>
+<summary><b>💡 Como este trabalho reaproveita cada demo (abra para ver o mapa mental)</b></summary>
+<blockquote>
+
+| Demo que você fez | Como aparece aqui |
+|-------------------|-------------------|
+| **02.1 Storage (EFS + S3)** | O Bloco 1 é a migração `EFS → S3`. A decisão "por que S3 e não EFS" está no `DECISION.md`. |
+| **03.1 x86 vs Graviton** | As Lambdas rodam em `arm64` (Graviton). Você justifica a escolha com o que mediu na demo. |
+| **03.2 ECS + Fargate** | Entra na decisão "por que Lambda e não Fargate para servir a API". |
+| **03.3 Lambda (fase 1)** | O padrão API Gateway → Lambda → S3 e a observabilidade com Powertools são reaproveitados direto. |
+
+O que **não** entra: SQS e Kinesis (fases 2 e 3 da demo de Lambda). Este trabalho para na ingestão direta com Lambda.
+
+</blockquote>
+</details>
+
+## Contexto
+
+Nas quatro demos você viu, separadamente, storage, três modelos de compute e observabilidade. Um sistema real não usa essas peças isoladas — ele as **combina** para resolver um problema de negócio. Este trabalho é essa combinação: uma pequena modernização de dados, do tipo que um engenheiro faz na primeira semana de emprego, montando peças que já existem e escrevendo só o miolo que falta.
+
+---
+
+## Bloco 0 - Provisionar a infraestrutura
+
+> *Marina: "Não perca tempo montando encanamento. O time de plataforma já deixou a base pronta — foca no que resolve o problema."*
+
+Toda a infraestrutura vem pronta: VPC, a EC2 com o EFS legado (já com os 10 pedidos dentro), o bucket S3 do data lake, as duas Lambdas e a API Gateway. Você roda **um** script e espera.
+
+### Resultado esperado deste bloco
+
+Um comando imprime `BUCKET`, `INSTANCE_ID` e `API_URL`. A partir daí, toda a infra existe na sua conta e você pode começar o trabalho de verdade.
+
+<a id="passo-1"></a>
+**1.** No Codespaces, entre na pasta do trabalho e rode o script de provisionamento. Ele descobre o bucket de estado sozinho, inicializa e aplica os 3 stacks Terraform na ordem certa:
+
+```bash
+cd /workspaces/fiap-cloud-engineering/04-Trabalho-Final
+bash scripts/init.sh
+```
+
+> [!TIP]
+> **Pode rodar quantas vezes precisar.** O `init.sh` é idempotente: ele só cria o que ainda não existe e reaproveita o que já subiu. Se algo falhar no meio (mount do EFS, timeout, rede), é só rodar `bash scripts/init.sh` de novo — ele retoma de onde parou, não recria a EC2 nem o EFS do zero.
+
+O script leva ~8-10 min (a EC2 e o EFS demoram para subir). Ao final, ele imprime três linhas:
+
+```
+BUCKET=pedeja-datalake-<sua-conta>
+INSTANCE_ID=i-0abc123...
+API_URL=https://xxxx.execute-api.us-east-1.amazonaws.com
+```
+
+> 📸 **Print obrigatório** — salve como `prints/01-provisionamento.png`. Capture o terminal mostrando o `Apply complete!` e as 3 linhas finais de saída do `init.sh`: `BUCKET`, `INSTANCE_ID` e `API_URL`.
+
+<details>
+<summary><b>⚠ Se der erro: <code>nenhum bucket base-config- encontrado</code></b></summary>
+<blockquote>
+O setup de credenciais da aula não foi executado. Volte ao [Preparando Credenciais](../01-create-codespaces/Inicio-de-aula.md), puxe credenciais novas e rode o passo 1 de novo.
+</blockquote>
+</details>
+
+<a id="passo-2"></a>
+**2.** Capture os três valores em variáveis de ambiente — os próximos blocos usam `$BUCKET`, `$INSTANCE_ID` e `$API`. Rode na pasta `04-Trabalho-Final`:
+
+```bash
+cd /workspaces/fiap-cloud-engineering/04-Trabalho-Final
+export BUCKET=$(terraform -chdir=terraform/01-storage output -raw bucket_datalake)
+export INSTANCE_ID=$(terraform -chdir=terraform/01-storage output -raw instance_id)
+export API=$(terraform -chdir=terraform/03-api output -raw api_url)
+echo "BUCKET......: $BUCKET"
+echo "INSTANCE_ID.: $INSTANCE_ID"
+echo "API.........: $API"
+```
+
+> [!TIP]
+> Essas variáveis valem enquanto o terminal estiver aberto. Se fechar ou abrir outro terminal, rode o passo 2 de novo.
+
+Confirme que as duas Lambdas subiram (sanidade do provisionamento):
+
+```bash
+aws lambda list-functions \
+  --query "Functions[?starts_with(FunctionName,'pedeja-')].FunctionName" --output text
+```
+
+Saída esperada: `pedeja-processa-faturamento    pedeja-api-faturamento` (em qualquer ordem). Se faltar alguma, algum stack não aplicou — rode `bash scripts/init.sh` de novo (é idempotente).
+
+### Checkpoint
+
+- [x] `init.sh` terminou imprimindo `BUCKET`, `INSTANCE_ID` e `API_URL`.
+- [x] As três variáveis de ambiente estão preenchidas (passo 2).
+
+---
+
+## Bloco 1 - Migrar os pedidos do EFS para o S3
+
+> *Marina: "Primeiro, tira esses pedidos do servidor de arquivos antigo e joga no nosso data lake no S3."*
+
+Os 10 pedidos estão como arquivos `.json` no EFS montado em `/efs/pedidos` dentro da EC2. Você vai entrar na instância via SSM e sincronizar para o S3 — o mesmo tipo de operação de storage que você viu na demo 02.1.
+
+### Resultado esperado deste bloco
+
+Os 10 arquivos de pedido copiados do EFS para `s3://$BUCKET/raw/`.
+
+<a id="passo-3"></a>
+**3.** Abra a sessão na EC2 pelo console. Acesse o [console do EC2](https://us-east-1.console.aws.amazon.com/ec2/home?region=us-east-1#Instances:instanceState=running), selecione a instância `pedeja-migracao-instance`, clique em `Conectar`, aba `Gerenciador de sessões`, botão `Conectar`. Uma nova aba abre com o terminal da EC2.
+
+> [!NOTE]
+> Diferente da demo de Storage, aqui você **não precisa** configurar o log group `/ssm/ssh` nem as preferências do Session Manager — este trabalho não audita a sessão. Conecte direto.
+
+> 📸 **Print obrigatório** — salve como `prints/02-ssm-conectar.png`. Capture a aba "Gerenciador de sessões" com a `pedeja-migracao-instance` selecionada e o botão Conectar visível.
+
+<a id="passo-4"></a>
+**4.** **Dentro da sessão SSM da EC2** (não no Codespaces — é outro terminal), confirme que `/efs` está mesmo montado como EFS (e não é uma pasta comum no disco local) e que os 10 pedidos estão lá. Este é o **go/no-go** de entrada:
+
+```bash
+df -h /efs
+ls /efs/pedidos/ | wc -l
+```
+
+Saída esperada: no `df -h /efs`, o tipo/origem mostra um **IP terminado em `:/`** (ex: `10.20.1.133:/`, tipo `nfs4`) — é assim que você confirma que é o EFS montado por NFS, não o disco local (que apareceria como `/dev/nvme0n1p1`). E o `ls` retorna **`10`**.
+
+> [!NOTE]
+> O `init.sh` já espera a EC2 subir e garante o mount do EFS antes de terminar. Se mesmo assim o `df -h /efs` mostrar `/dev/nvme...` (disco local) em vez do IP `nfs4`, o mount não subiu — use o bloco de recuperação abaixo antes de migrar. Migrar de um `/efs` que é disco local faria o lab "funcionar" sem nunca tocar o EFS.
+
+<details>
+<summary><b>⚠ Se der erro: <code>df -h /efs</code> mostra disco local (<code>/dev/nvme...</code>), ou <code>ls</code> não deu 10</b></summary>
+<blockquote>
+
+Monte o EFS manualmente pelo **IP do mount target** (no Learner Lab o DNS `fs-xxx.efs...` costuma não resolver — por isso montamos por IP) e replante os pedidos, tudo na sessão SSM da EC2:
+
+```bash
+EFS_IP=$(aws efs describe-mount-targets \
+  --file-system-id $(aws efs describe-file-systems --query "FileSystems[?Name=='pedeja-efs-legado'].FileSystemId" --output text --region us-east-1) \
+  --query "MountTargets[0].IpAddress" --output text --region us-east-1)
+sudo umount /efs 2>/dev/null
+sudo mkdir -p /efs
+sudo mount -t nfs4 -o nfsvers=4.1,hard,timeo=600,retrans=2,noresvport ${EFS_IP}:/ /efs
+sudo mkdir -p /efs/pedidos
+jq -c '.[]' /tmp/pedidos.json | while read -r p; do
+  id=$(echo "$p" | jq -r '.pedido_id')
+  echo "$p" | sudo tee /efs/pedidos/$id.json >/dev/null
+done
+df -h /efs && ls /efs/pedidos/ | wc -l
+```
+
+Agora `df -h /efs` deve mostrar `${EFS_IP}:/` (tipo `nfs4`) e o `ls` deve dar `10`. Se `/tmp/pedidos.json` não existir (o `user-data` nem começou), espere mais 1 min; se persistir, destrua e recrie: `terraform -chdir=terraform/01-storage destroy -auto-approve` e rode o `init.sh` de novo.
+
+</blockquote>
+</details>
+
+<a id="passo-5"></a>
+**5.** **Ainda na sessão SSM da EC2**, migre os pedidos do EFS legado para o data lake S3. **Esta é a operação central do Bloco 1 — você monta o comando.**
+
+Primeiro, descubra o nome do bucket (a variável `$BUCKET` do passo 2 não existe aqui — é outro terminal). O bucket é sempre `pedeja-datalake-<sua-conta>`:
+
+```bash
+BUCKET="pedeja-datalake-$(aws sts get-caller-identity --query Account --output text)"
+```
+
+Agora **construa você mesmo** o comando que faz a migração. O que ele precisa garantir:
+
+- **origem:** a pasta dos pedidos no EFS montado → `/efs/pedidos`
+- **destino:** o prefixo `raw/` do data lake → `s3://$BUCKET/raw/`
+- **região:** `us-east-1`
+
+> 💡 Baseie-se na demo **02.1 (Storage)**: existe um subcomando da AWS CLI que **sincroniza** uma pasta local com um prefixo do S3, copiando só o que ainda não está lá (é incremental e idempotente). É o mesmo subcomando que você usou para popular um bucket a partir de arquivos. Descubra qual é e monte a linha com a origem, o destino e a região acima.
+
+Depois de migrar, confira o resultado (este é o **go/no-go** da migração):
+
+```bash
+aws s3 ls s3://$BUCKET/raw/ --region us-east-1 | wc -l
+```
+
+Saída esperada: **`10`**. Se não deu 10, revise seu comando de migração (origem/destino corretos?), espere alguns segundos e rode de novo — a operação é idempotente, repetir não duplica nada.
+
+> 📸 **Print obrigatório** — salve como `prints/03-migracao-efs-s3.png`. Capture a saída do **seu** comando de migração mostrando os 10 uploads para `raw/` e o `10` final da conferência.
+
+<details>
+<summary><b>💡 Clique para entender — por que rodar isso de dentro da EC2 (e não pelo laptop)</b></summary>
+<blockquote>
+
+O comando de migração roda **de dentro da EC2**, que já enxerga o EFS montado e tem permissão S3 pela `LabInstanceProfile`. Os bytes vão direto da rede AWS para o S3, sem passar pela sua máquina. É a mesma lição da demo de Storage: mantenha o dado perto de onde ele é processado, não force um round-trip pelo cliente.
+
+O subcomando de **sincronização** que você montou também é **idempotente** — se rodar de novo, ele só copia o que mudou. Rodar duas vezes não duplica nada.
+
+</blockquote>
+</details>
+
+### Checkpoint
+
+- [x] `df -h /efs` mostrou um IP `:/` do tipo `nfs4` (confirmado: `/efs` é o EFS montado, não disco local).
+- [x] `ls /efs/pedidos/ | wc -l` retornou 10 (os pedidos estavam no EFS legado).
+- [x] `aws s3 ls s3://$BUCKET/raw/ | wc -l` retornou 10 (migração concluída).
+
+---
+
+## Bloco 2 - Processar o faturamento (Lambda Graviton)
+
+> *Marina: "Agora transforma esses pedidos crus num resumo de faturamento por cidade."*
+
+A Lambda `pedeja-processa-faturamento` já existe (o Bloco 0 criou), roda em **Graviton (arm64)** e tem toda a leitura/escrita do S3 pronta. **Falta só o miolo**: a lógica que agrega o faturamento por cidade. É o que você vai completar.
+
+### Resultado esperado deste bloco
+
+O arquivo `resumo/faturamento.json` gravado no S3, com o faturamento por cidade batendo o número determinístico dos 10 pedidos.
+
+<a id="passo-6"></a>
+**6.** Abra o handler da Lambda de processamento no editor do Codespaces:
+
+```bash
+code /workspaces/fiap-cloud-engineering/04-Trabalho-Final/lambdas/processa/handler.py
+```
+
+Leia o arquivo inteiro. Tudo está pronto — imports, Powertools, `ler_pedidos_do_s3()` e `gravar_resumo_no_s3()` — **exceto** o bloco marcado com `# TODO — VOCE COMPLETA AQUI`.
+
+<details>
+<summary><b>💡 Prefere outra linguagem? (Node.js, Java, Go, .NET, Ruby)</b></summary>
+<blockquote>
+
+O padrão entregue é Python, mas o Lambda suporta várias linguagens e você pode fazer o exercício em qualquer uma delas. O que muda em **cada** Lambda (`02-processa` e `03-api`) são três coisas acopladas — todas no `main.tf` do stack:
+
+1. **`runtime`** — troque `"python3.12"` pelo runtime da sua linguagem: `nodejs20.x`, `java21`, `dotnet8`, `ruby3.3`, ou `provided.al2023` (Go / runtime customizado).
+2. **`handler`** — o formato do handler muda por linguagem (ex: Node → `index.handler`; Java → `pacote.Classe::metodo`). Ajuste também o nome do arquivo dentro de `lambdas/processa/` e `lambdas/api/`.
+3. **Powertools (layer)** — a layer configurada (`powertools_layer`) é **específica de Python**. No caminho de outra linguagem, o mais simples é **remover** a linha `layers = [local.powertools_layer]` do recurso e usar a observabilidade nativa da sua linguagem (ex: `console.log` no Node, que já cai no CloudWatch Logs). Você perde as métricas EMF prontas do Powertools, mas o exercício não depende delas.
+
+> [!IMPORTANT]
+> **Linguagens compiladas exigem um passo de build antes do zip.** Python e Node.js são "zip do código-fonte" — o `archive_file` do Terraform empacota a pasta direto e funciona. Já **Java, Go e .NET precisam ser compilados** (`mvn package`, `go build`, `dotnet publish`) e o zip deve conter o artefato compilado, não o fonte. Nesse caso, gere o build você mesmo e aponte o `filename`/`source_dir` da Lambda para o artefato pronto (ou adicione um `null_resource` com `local-exec` que roda o build antes do `archive_file`). Se estiver com o tempo apertado, **fique em Node.js ou Python** — são as que rodam sem toolchain extra.
+
+**Exemplo em Node.js** (linguagem de zip direto, como a demo de ECS que você fez). Para a Lambda de **processamento** (`lambdas/processa/index.js`), o miolo equivalente ao TODO:
+
+```javascript
+const { S3Client, ListObjectsV2Command, GetObjectCommand, PutObjectCommand } = require("@aws-sdk/client-s3");
+const s3 = new S3Client({});
+const BUCKET = process.env.BUCKET_DATA_LAKE;
+
+exports.handler = async () => {
+  // le raw/, agrega por cidade, grava resumo/faturamento.json (mesmo contrato do Python)
+  const lista = await s3.send(new ListObjectsV2Command({ Bucket: BUCKET, Prefix: "raw/" }));
+  const resumo = {};
+  for (const obj of lista.Contents ?? []) {
+    if (!obj.Key.endsWith(".json")) continue;
+    const r = await s3.send(new GetObjectCommand({ Bucket: BUCKET, Key: obj.Key }));
+    const p = JSON.parse(await r.Body.transformToString());
+    if (!resumo[p.cidade]) resumo[p.cidade] = { pedidos: 0, faturamento: 0 };
+    resumo[p.cidade].pedidos += 1;
+    resumo[p.cidade].faturamento = Math.round((resumo[p.cidade].faturamento + p.valor) * 100) / 100;
+  }
+  await s3.send(new PutObjectCommand({
+    Bucket: BUCKET, Key: "resumo/faturamento.json",
+    Body: JSON.stringify(resumo), ContentType: "application/json",
+  }));
+  return { status: "ok", cidades: Object.keys(resumo).length };
+};
+```
+
+No `terraform/02-processa/main.tf`: `runtime = "nodejs20.x"`, `handler = "index.handler"`, remova a linha `layers`. O SDK `@aws-sdk/client-s3` já vem no runtime `nodejs20.x` — não precisa `npm install`. O contrato (lê `raw/`, grava `resumo/faturamento.json`) e a saída determinística (R$ 596,70) são **os mesmos**, independente da linguagem. A Lambda da API segue a mesma ideia, lendo `resumo/faturamento.json` e devolvendo no `body` da resposta HTTP.
+
+</blockquote>
+</details>
+
+<a id="passo-7"></a>
+**7.** Complete o `TODO`: a partir da lista `pedidos` (cada item tem `cidade` e `valor`), monte o dicionário `resumo` agregando faturamento e contagem por cidade, no formato indicado no comentário. São poucas linhas de Python — a demo de Lambda já mostrou o padrão de somar por dimensão.
+
+> [!TIP]
+> O resultado precisa ser determinístico: os 10 pedidos são fixos, então o faturamento por cidade é sempre o mesmo. Você valida contra o número conhecido no passo 8. Se der diferente, o bug está na sua agregação.
+
+<a id="passo-8"></a>
+**8.** Reaplique **só o stack da Lambda de processamento** e invoque a função. O `terraform apply` reempacota o `handler.py` (o hash do zip muda quando você edita o código) e atualiza a Lambda:
+
+```bash
+cd /workspaces/fiap-cloud-engineering/04-Trabalho-Final
+terraform -chdir=terraform/02-processa apply -auto-approve
+aws lambda invoke --function-name pedeja-processa-faturamento \
+  --cli-binary-format raw-in-base64-out --payload '{}' /tmp/saida.json
+cat /tmp/saida.json && echo
+aws s3 cp s3://$BUCKET/resumo/faturamento.json -
+```
+
+Saída esperada da invocação: `{"status": "ok", "cidades": 4, "s3_key": "resumo/faturamento.json"}`.
+
+> [!TIP]
+> **Editou o `handler.py`? Rode de novo, à vontade.** Esse ciclo `apply` → `invoke` é feito para repetir: cada vez que você muda o código, roda `terraform apply` (reempacota e atualiza a Lambda) e invoca outra vez. Errou, corrigiu, testou de novo — quantas vezes precisar, sem limpar nada antes.
+
+> [!NOTE]
+> Se o `apply` disser **`No changes`** mas você editou o código, force o reempacotamento apagando o zip antigo e reaplicando:
+> ```bash
+> rm -f terraform/02-processa/build/processa.zip
+> terraform -chdir=terraform/02-processa apply -auto-approve
+> ```
+
+O `aws s3 cp ... -` imprime o **JSON cru** do `faturamento.json` — uma linha só, sem quebras. **É esse o formato certo**; não espere uma tabela na tela. Algo como:
+
+```json
+{"Sao Paulo": {"pedidos": 4, "faturamento": 235.3}, "Rio de Janeiro": {"pedidos": 2, "faturamento": 198.4}, "Curitiba": {"pedidos": 2, "faturamento": 90.0}, "Belo Horizonte": {"pedidos": 2, "faturamento": 73.0}}
+```
+
+A tabela abaixo **não é o que aparece na tela** — é só a sua **conferência dos números**: bata cada cidade do seu JSON contra ela. O faturamento é determinístico (**tem que bater**), e as cidades vêm **sem acento**, exatamente como no dataset (`Sao Paulo`).
+
+| Cidade | Pedidos | Faturamento |
+|--------|---------|-------------|
+| Sao Paulo | 4 | 235.3 |
+| Rio de Janeiro | 2 | 198.4 |
+| Curitiba | 2 | 90.0 |
+| Belo Horizonte | 2 | 73.0 |
+| **Total** | **10** | **596.7** |
+
+> 📸 **Print obrigatório** — salve como `prints/04-processa-faturamento.png`. Capture o terminal com o resultado da invocação (`{"status": "ok", "cidades": 4, ...}`) e o conteúdo do `faturamento.json` com os 4 valores por cidade.
+
+Confirme que a Lambda roda mesmo em **Graviton** — é uma das decisões que você defende no `DECISION.md`:
+
+```bash
+aws lambda get-function-configuration --function-name pedeja-processa-faturamento \
+  --query "Architectures" --output text
+```
+
+Saída esperada: `arm64`.
+
+<details>
+<summary>💡 <b>A invocação deu erro (<code>FunctionError</code>, <code>{}</code> ou nada gravado)? Veja o log da Lambda no CloudWatch</b></summary>
+<blockquote>
+
+Toda Lambda escreve seus `print`/`log` e o **traceback de qualquer exceção** no CloudWatch Logs. O *porquê* do erro é seu trabalho — mas **enxergar** a mensagem não pode ser o problema. Cada função tem um **log group** (`/aws/lambda/<nome-da-função>`); dentro dele há vários **log streams** (um por "container" que a AWS levantou), e o traceback da sua última invocação está no stream **mais recente**.
+
+O jeito mais rápido é não caçar stream nenhum — deixe a CLI seguir o log group inteiro em tempo real e invoque de novo em outro terminal:
+
+```bash
+# terminal 1: fica seguindo os logs mais recentes (Ctrl-C para sair)
+aws logs tail /aws/lambda/pedeja-processa-faturamento --follow --since 10m --format short
+
+# terminal 2 (ou o mesmo, sem --follow): dispara a Lambda de novo
+aws lambda invoke --function-name pedeja-processa-faturamento \
+  --cli-binary-format raw-in-base64-out --payload '{}' /tmp/saida.json
+```
+
+Procure a linha `[ERROR]` ou `Traceback (most recent call last)` — ela aponta o arquivo e a linha exata que estourou.
+
+**Prefere o console?** Abra **CloudWatch → Log groups → `/aws/lambda/pedeja-processa-faturamento`** e clique no log stream do topo (o de horário mais recente). É lá que está o traceback da sua última execução.
+
+</blockquote>
+</details>
+
+<details>
+<summary><b>⚠ Se der erro: o faturamento não bate ou vem <code>cidades: 0</code></b></summary>
+<blockquote>
+
+- `cidades: 0` → seu `resumo` ficou vazio. Confirme que você percorreu `pedidos` e preencheu o dicionário no formato do comentário.
+- Faturamento errado → cheque se está somando `p["valor"]` (e não contando) e arredondando com `round(x, 2)`.
+- `KeyError` → confirme que usou as chaves `"cidade"` e `"valor"` (é assim que cada pedido vem).
+- `apply` disse `No changes` → use o bloco `rm -f ...build/processa.zip` do `[!NOTE]` acima e reaplique.
+
+Depois de corrigir, rode o passo 8 de novo.
+
+</blockquote>
+</details>
+
+### Checkpoint
+
+- [x] Você completou o `TODO` do `lambdas/processa/handler.py`.
+- [x] A invocação retornou `status: ok` e `cidades: 4`.
+- [x] `get-function-configuration` confirmou `arm64` (Graviton).
+- [x] O `faturamento.json` no S3 bate o total de **R$ 596,70** em 10 pedidos.
+
+---
+
+## Bloco 3 - Servir o resultado por uma API
+
+> *Marina: "Perfeito. Agora me dá um jeito de consultar isso sem entrar na AWS — uma URL que devolve o faturamento."*
+
+A API já existe: API Gateway → Lambda `pedeja-api-faturamento`. A resposta HTTP e o roteamento estão prontos. **Falta o miolo**: ler o `resumo/faturamento.json` do S3 e devolvê-lo. Você completa.
+
+### Resultado esperado deste bloco
+
+`GET {API}/faturamento` retorna o JSON do faturamento por cidade.
+
+<a id="passo-9"></a>
+**9.** Abra o handler da API:
+
+```bash
+code /workspaces/fiap-cloud-engineering/04-Trabalho-Final/lambdas/api/handler.py
+```
+
+Está tudo pronto — a função `resposta()` e o roteamento — **exceto** o bloco `# TODO — VOCE COMPLETA AQUI`.
+
+<a id="passo-10"></a>
+**10.** Complete o `TODO`: leia o objeto `CHAVE_RESUMO` do bucket no S3 e faça o `json.loads` para o dict `faturamento`. Trate o caso do objeto ainda não existir devolvendo `resposta(404, ...)`. O comentário no código dá a dica do `boto3`.
+
+<a id="passo-11"></a>
+**11.** Reaplique **só o stack da API** (reempacota seu código) e consulte o endpoint:
+
+```bash
+cd /workspaces/fiap-cloud-engineering/04-Trabalho-Final
+terraform -chdir=terraform/03-api apply -auto-approve
+curl -s "$API/faturamento" | python3 -m json.tool
+```
+
+Saída esperada: o mesmo JSON de faturamento por cidade do passo 8 (as **4 cidades**, total R$ 596,70), agora servido pela API.
+
+> [!TIP]
+> **Mesma regra do passo 8: editou o handler, roda de novo.** `terraform apply` reempacota e atualiza a Lambda da API; o `curl` consulta o resultado. Ajuste o código, reaplique, consulte — repita quantas vezes precisar.
+
+> [!IMPORTANT]
+> Se o `curl` retornar `{}` (vazio) com sucesso, **não terminou**: significa que o `resumo/faturamento.json` está vazio — seu TODO do **bloco 2** (passo 7) não agregou nada. Volte ao passo 8, confirme que a invocação deu `cidades: 4`, e só então consulte a API. Um `{}` não é a resposta certa.
+
+> [!NOTE]
+> Se o `apply` disser **`No changes`** mas você editou o handler, force o reempacotamento: `rm -f terraform/03-api/build/api.zip && terraform -chdir=terraform/03-api apply -auto-approve`.
+
+> 📸 **Print obrigatório** — salve como `prints/05-api-faturamento.png`. Capture o terminal com o `curl` para `$API/faturamento` e o JSON de faturamento por cidade retornado pela API.
+
+<details>
+<summary>💡 <b>O <code>curl</code> devolveu erro 5xx, HTML de erro ou <code>Internal Server Error</code>? Veja o log da API no CloudWatch</b></summary>
+<blockquote>
+
+Quando a Lambda da API estoura uma exceção, o API Gateway responde `5xx` e o traceback fica no CloudWatch Logs da função — **não** no `curl`. Mesma ideia do passo 8: siga o log group em tempo real e refaça a chamada:
+
+```bash
+# terminal 1: segue os logs mais recentes da Lambda da API (Ctrl-C para sair)
+aws logs tail /aws/lambda/pedeja-api-faturamento --follow --since 10m --format short
+
+# terminal 2 (ou o mesmo, sem --follow): chama a API de novo
+curl -s "$API/faturamento" | python3 -m json.tool
+```
+
+A linha `[ERROR]` / `Traceback (most recent call last)` mostra o arquivo e a linha que falhou. No console é o mesmo caminho: **CloudWatch → Log groups → `/aws/lambda/pedeja-api-faturamento`** → log stream do topo (o mais recente).
+
+</blockquote>
+</details>
+
+<details>
+<summary><b>⚠ Se der erro: <code>{"erro": "resumo ainda nao gerado; rode o bloco 2"}</code> (404)</b></summary>
+<blockquote>
+A API funcionou, mas o `resumo/faturamento.json` não existe no S3 — você provavelmente pulou ou errou o Bloco 2. Volte ao passo 8, gere o resumo, e consulte a API de novo.
+</blockquote>
+</details>
+
+### Checkpoint
+
+- [x] Você completou o `TODO` do `lambdas/api/handler.py`.
+- [x] `curl $API/faturamento` retorna o faturamento por cidade em JSON.
+
+---
+
+## Bloco 4 - Decidir e entregar
+
+> *Marina: "Antes de fechar: me explica por que você escolheu essa arquitetura. Vou levar para a diretoria."*
+
+### Resultado esperado deste bloco
+
+Um `DECISION.md` preenchido, o zip de entrega montado, e a infra destruída.
+
+<a id="passo-12"></a>
+**12.** Copie o template e responda cada seção com base no que você **mediu e viu nas demos** — é o mais importante da entrega:
+
+```bash
+cd /workspaces/fiap-cloud-engineering/04-Trabalho-Final
+cp DECISION.md.template DECISION.md
+code DECISION.md
+```
+
+O `DECISION.md` te pede para defender: **S3 vs EFS**, **Graviton**, **Lambda vs Fargate** e as consequências. Poucas linhas por seção, mas com o **porquê** — é o que separa júnior de sênior.
+
+<a id="passo-13"></a>
+**13.** Monte o **zip de entrega** com o código que você completou, o `DECISION.md` e os prints que tirou ao longo do caminho.
+
+> [!IMPORTANT]
+> Repare que suas coisas estão em **dois lugares diferentes**: o **código e o `DECISION.md` vivem no Codespaces** (na nuvem), mas os **prints são arquivos `.png` na sua máquina local** — você os salvou com print de tela, o Codespaces nunca os viu. Por isso a montagem tem **duas partes**: primeiro empacote o código no Codespaces e **baixe** esse zip; depois, **na sua máquina**, junte os prints.
+
+**Parte A — no Codespaces:** empacote o código e o `DECISION.md`:
+
+```bash
+cd /workspaces/fiap-cloud-engineering/04-Trabalho-Final
+mkdir -p entrega
+# Os dois handlers se chamam handler.py — renomeie ao copiar para nao colidir:
+cp lambdas/processa/handler.py entrega/processa_handler.py
+cp lambdas/api/handler.py      entrega/api_handler.py
+cp DECISION.md entrega/
+zip -r trabalho-final.zip entrega/
+```
+
+Agora **baixe o zip para a sua máquina**: no painel de arquivos do Codespaces (à esquerda), clique com o botão direito em `trabalho-final.zip` → **Download**. Ele vai para a pasta de downloads do seu computador.
+
+**Parte B — na sua máquina local:** descompacte o zip que você baixou, crie a pasta `prints/` dentro de `entrega/`, mova para lá os **5 prints** que você tirou, e recompacte. A estrutura final tem que ficar assim (os 5 prints são os que o README pediu em cada bloco, marcados com 📸 **Print obrigatório**):
+
+```
+entrega/
+├── processa_handler.py   (bloco 2 — com seu miolo de agregacao, veio do Codespaces)
+├── api_handler.py        (bloco 3 — com seu miolo de leitura do S3, veio do Codespaces)
+├── DECISION.md           (veio do Codespaces)
+└── prints/               (voce cria aqui, na maquina local)
+    ├── 01-provisionamento.png       (Bloco 0 — Apply complete + saidas do init.sh)
+    ├── 02-ssm-conectar.png          (Bloco 1 — sessao SSM na pedeja-migracao-instance)
+    ├── 03-migracao-efs-s3.png       (Bloco 1 — aws s3 sync com os 10 uploads)
+    ├── 04-processa-faturamento.png  (Bloco 2 — invocacao + faturamento.json)
+    └── 05-api-faturamento.png       (Bloco 3 — curl na API + JSON retornado)
+```
+
+O `trabalho-final.zip` final (com código + `DECISION.md` + os 5 prints) é o que você entrega.
+
+<a id="passo-14"></a>
+**14.** Destrua toda a infraestrutura. **Este passo não é opcional.**
+
+```bash
+cd /workspaces/fiap-cloud-engineering/04-Trabalho-Final
+terraform -chdir=terraform/03-api destroy -auto-approve
+terraform -chdir=terraform/02-processa destroy -auto-approve
+terraform -chdir=terraform/01-storage destroy -auto-approve
+```
+
+> [!CAUTION]
+> A EC2, o EFS e as Lambdas geram custo enquanto vivos. A ordem de destruição é a **inversa** da criação (api → processa → storage), porque o storage cria o bucket que os outros usam. Destrua sempre no fim.
+
+### Checkpoint
+
+- [x] `DECISION.md` preenchido com as 4 decisões defendidas.
+- [x] `trabalho-final.zip` montado com código + `DECISION.md` + os **5 prints obrigatórios** (`01-provisionamento` … `05-api-faturamento`).
+- [x] Os 3 stacks destruídos (`Destroy complete!` em cada um).
+
+---
+
+## Conclusão
+
+Você modernizou a ingestão da PedeJá de ponta a ponta: migrou os pedidos de um **file system legado (EFS)** para o **data lake (S3)**, processou-os com uma **Lambda em Graviton** que agrega o faturamento, e serviu o resultado por uma **API (Lambda + API Gateway)** — completando apenas o miolo de cada peça e defendendo cada escolha num documento de decisão. Mais do que os serviços, você praticou o que um engenheiro de dados faz de verdade: **combinar peças conhecidas para resolver um problema de negócio** e justificar a arquitetura com dados, não com opinião.
+
+---
+
+<details>
+<summary><b>💡 Glossário rápido</b></summary>
+<blockquote>
+
+| Termo | O que é |
+|-------|---------|
+| EFS | Elastic File System — NFS gerenciado; aqui, o "file server legado" da PedeJá. |
+| S3 | Object storage; o data lake destino da migração. |
+| `aws s3 sync` | Copia incremental e idempotente de arquivos para o S3. |
+| Graviton (arm64) | CPUs ARM da AWS; ~20% mais baratas, escolhidas para as Lambdas. |
+| Lambda | Função serverless invocada por evento (aqui: invocação direta e via API Gateway). |
+| API Gateway | Porta de entrada HTTP que entrega a requisição como evento à Lambda. |
+| Powertools | Biblioteca AWS para Lambda: log estruturado, métricas EMF, trace X-Ray. |
+| LabInstanceProfile | Perfil de instância do Academy que dá à EC2 acesso a SSM e S3. |
+| LabRole | Role IAM pré-criada do Academy usada pelas Lambdas. |
+
+</blockquote>
+</details>
+
+<details>
+<summary><b>💡 Como pedir ajuda se travou</b></summary>
+<blockquote>
+
+**Antes de abrir issue ou chamar o professor, colete:**
+
+1. Em qual passo (número) travou.
+2. A mensagem de erro **literal** (copie e cole, não resuma).
+3. O que `aws sts get-caller-identity` retorna agora.
+4. Em qual ambiente o erro apareceu (Codespaces ou sessão SSM da EC2).
+
+**Canais, em ordem:**
+
+1. [Issues deste repositório](https://github.com/vamperst/fiap-cloud-engineering/issues) — preferido, cria histórico pesquisável.
+2. Email do professor com os 4 itens acima.
+3. Na sala de aula, durante o laboratório.
+
+</blockquote>
+</details>
