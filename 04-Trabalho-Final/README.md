@@ -96,7 +96,7 @@ INSTANCE_ID=i-0abc123...
 API_URL=https://xxxx.execute-api.us-east-1.amazonaws.com
 ```
 
-> 📸 **Print sugerido:** o terminal mostrando as 3 linhas finais (`BUCKET`, `INSTANCE_ID`, `API_URL`) do `init.sh`.
+> 📸 **Print obrigatório** — salve como `prints/01-provisionamento.png`. Capture o terminal mostrando o `Apply complete!` e as 3 linhas finais de saída do `init.sh`: `BUCKET`, `INSTANCE_ID` e `API_URL`.
 
 <details>
 <summary><b>⚠ Se der erro: <code>nenhum bucket base-config- encontrado</code></b></summary>
@@ -153,7 +153,7 @@ Os 10 arquivos de pedido copiados do EFS para `s3://$BUCKET/raw/`.
 > [!NOTE]
 > Diferente da demo de Storage, aqui você **não precisa** configurar o log group `/ssm/ssh` nem as preferências do Session Manager — este trabalho não audita a sessão. Conecte direto.
 
-> 📸 **Print sugerido:** a aba "Gerenciador de sessões" com a `pedeja-migracao-instance` selecionada e o botão Conectar.
+> 📸 **Print obrigatório** — salve como `prints/02-ssm-conectar.png`. Capture a aba "Gerenciador de sessões" com a `pedeja-migracao-instance` selecionada e o botão Conectar visível.
 
 <a id="passo-4"></a>
 **4.** **Dentro da sessão SSM da EC2** (não no Codespaces — é outro terminal), confirme que `/efs` está mesmo montado como EFS (e não é uma pasta comum no disco local) e que os 10 pedidos estão lá. Este é o **go/no-go** de entrada:
@@ -205,7 +205,7 @@ aws s3 ls s3://$BUCKET/raw/ --region us-east-1 | wc -l
 
 Saída esperada: 10 linhas `upload: ... to s3://.../raw/PED-000X.json`, e ao final `10` (o **go/no-go** da migração). Se não deu 10, espere alguns segundos e rode o `sync` de novo.
 
-> 📸 **Print sugerido:** a saída do `aws s3 sync` mostrando os 10 uploads para `raw/` e o `10` final da conferência.
+> 📸 **Print obrigatório** — salve como `prints/03-migracao-efs-s3.png`. Capture a saída do `aws s3 sync` mostrando os 10 uploads para `raw/` e o `10` final da conferência.
 
 <details>
 <summary><b>💡 Clique para entender — por que <code>aws s3 sync</code> e não copiar pelo laptop</b></summary>
@@ -327,7 +327,7 @@ O `resumo/faturamento.json` deve conter (o faturamento é determinístico — **
 | Belo Horizonte | 2 | 73.0 |
 | **Total** | **10** | **596.7** |
 
-> 📸 **Print sugerido:** o terminal mostrando o resultado da invocação e o conteúdo do `faturamento.json` com os 4 valores por cidade.
+> 📸 **Print obrigatório** — salve como `prints/04-processa-faturamento.png`. Capture o terminal com o resultado da invocação (`{"status": "ok", "cidades": 4, ...}`) e o conteúdo do `faturamento.json` com os 4 valores por cidade.
 
 Confirme que a Lambda roda mesmo em **Graviton** — é uma das decisões que você defende no `DECISION.md`:
 
@@ -400,7 +400,7 @@ Saída esperada: o mesmo JSON de faturamento por cidade do passo 8 (as **4 cidad
 > [!NOTE]
 > Se o `apply` disser **`No changes`** mas você editou o handler, force o reempacotamento: `rm -f terraform/03-api/build/api.zip && terraform -chdir=terraform/03-api apply -auto-approve`.
 
-> 📸 **Print sugerido:** o terminal mostrando o `curl` para `$API/faturamento` e o JSON de faturamento por cidade retornado.
+> 📸 **Print obrigatório** — salve como `prints/05-api-faturamento.png`. Capture o terminal com o `curl` para `$API/faturamento` e o JSON de faturamento por cidade retornado pela API.
 
 <details>
 <summary><b>⚠ Se der erro: <code>{"erro": "resumo ainda nao gerado; rode o bloco 2"}</code> (404)</b></summary>
@@ -445,11 +445,11 @@ mkdir -p entrega/prints
 cp lambdas/processa/handler.py entrega/processa_handler.py
 cp lambdas/api/handler.py      entrega/api_handler.py
 cp DECISION.md entrega/
-# copie para entrega/prints/ os prints que voce salvou (migracao, processa, api)
+# copie para entrega/prints/ os 5 prints obrigatorios que voce salvou ao longo do lab
 zip -r trabalho-final.zip entrega/
 ```
 
-A estrutura do zip deve ficar assim:
+A estrutura do zip deve ficar assim — os 5 prints são os que o README pediu em cada bloco (marcados com 📸 **Print obrigatório**):
 
 ```
 entrega/
@@ -457,9 +457,11 @@ entrega/
 ├── api_handler.py        (bloco 3 — com seu miolo de leitura do S3)
 ├── DECISION.md
 └── prints/
-    ├── migracao.png
-    ├── processa.png
-    └── api.png
+    ├── 01-provisionamento.png       (Bloco 0 — Apply complete + saidas do init.sh)
+    ├── 02-ssm-conectar.png          (Bloco 1 — sessao SSM na pedeja-migracao-instance)
+    ├── 03-migracao-efs-s3.png       (Bloco 1 — aws s3 sync com os 10 uploads)
+    ├── 04-processa-faturamento.png  (Bloco 2 — invocacao + faturamento.json)
+    └── 05-api-faturamento.png       (Bloco 3 — curl na API + JSON retornado)
 ```
 
 <a id="passo-14"></a>
@@ -478,7 +480,7 @@ terraform -chdir=terraform/01-storage destroy -auto-approve
 ### Checkpoint
 
 - [x] `DECISION.md` preenchido com as 4 decisões defendidas.
-- [x] `trabalho-final.zip` montado com código + `DECISION.md` + prints.
+- [x] `trabalho-final.zip` montado com código + `DECISION.md` + os **5 prints obrigatórios** (`01-provisionamento` … `05-api-faturamento`).
 - [x] Os 3 stacks destruídos (`Destroy complete!` em cada um).
 
 ---
